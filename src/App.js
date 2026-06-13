@@ -2,9 +2,20 @@ import React, { useState, useEffect, useCallback } from 'react';
 import domande, { argomenti } from './domande';
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
-const APP_PASSWORD = 'medicina2025'; // ← cambia questa password
+// Utenti autorizzati: aggiungi qui username e password dei tuoi colleghi
+const UTENTI = {
+  'edoardo':  'medicina2025',
+  'enrica:    'acuradienricapiazza2027',
+  'eleonora':   'cardiologia2027',
+  // aggiungi altri: 'nomeutente': 'password'
+};
+
 const EXAM_N = 23;
-const STORAGE_KEY = 'tm_user_v1';
+const STORAGE_KEY = 'tm_session_v4';
+
+// API key letta dalla variabile d'ambiente Vercel
+// In locale metti una file .env con REACT_APP_ANTHROPIC_KEY=sk-ant-...
+const API_KEY = process.env.REACT_APP_ANTHROPIC_KEY || '';
 
 // ─── DESIGN TOKENS ─────────────────────────────────────────────────────────
 const C = {
@@ -15,7 +26,7 @@ const C = {
   ink3:     '#6B6B6B',
   ink4:     '#A0A0A0',
   rule:     '#E0DDD8',
-  red:      '#8B1A2F',   // bordeaux — firma della rivista
+  red:      '#8B1A2F',
   redLight: '#F9F0F2',
   redRule:  '#C4566A',
   green:    '#1A5C3A',
@@ -30,31 +41,32 @@ const C = {
 };
 
 const F = {
-  serif:  "'Playfair Display', Georgia, serif",
-  sans:   "'Inter', system-ui, sans-serif",
-  mono:   "'IBM Plex Mono', monospace",
+  serif: "'Playfair Display', Georgia, serif",
+  sans:  "'Inter', system-ui, sans-serif",
+  mono:  "'IBM Plex Mono', monospace",
 };
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 const shuffle = arr => [...arr].sort(() => Math.random() - 0.5);
 
-function loadUser() {
+function loadSession() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || null; }
   catch { return null; }
 }
-function saveUser(u) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(u)); } catch {}
+function saveSession(s) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
 }
-function clearUser() {
+function clearSession() {
   try { localStorage.removeItem(STORAGE_KEY); } catch {}
 }
 
-async function callClaude(apiKey, system, userMsg, maxTokens = 1000) {
+async function callClaude(system, userMsg, maxTokens = 1000) {
+  if (!API_KEY) throw new Error('API key non configurata. Contatta l\'amministratore.');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
+      'x-api-key': API_KEY,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     },
@@ -73,31 +85,29 @@ async function callClaude(apiKey, system, userMsg, maxTokens = 1000) {
   return data.content.map(b => b.text || '').join('');
 }
 
-async function correggi(apiKey, domanda, risposta, rispostaCorretta) {
+async function correggi(domanda, risposta, rispostaCorretta) {
   const text = await callClaude(
-    apiKey,
     `Sei un professore di Terapia Medica all'Università Vita-Salute San Raffaele (UNISR).
 Correggi la risposta dello studente rispetto alla risposta corretta della dispensa Piazza.
 Rispondi SOLO con JSON valido, nessun testo fuori dal JSON, nessun markdown.
-Formato:
-{"voto":"OTTIMO"|"BUONO"|"SUFFICIENTE"|"INSUFFICIENTE","punteggio":<0-10>,"feedback":"<3-5 righe concise: cosa era corretto, cosa mancava, concetti chiave>","concetti":["<c1>","<c2>","<c3>"]}`,
+Formato esatto:
+{"voto":"OTTIMO"|"BUONO"|"SUFFICIENTE"|"INSUFFICIENTE","punteggio":<0-10>,"feedback":"<3-5 righe: cosa era corretto, cosa mancava, risposta ideale>","concetti":["<c1>","<c2>","<c3>"]}`,
     `DOMANDA: ${domanda}\nRISPOSTA STUDENTE: ${risposta || "(nessuna)"}\nRISPOSTA DISPENSA: ${rispostaCorretta}`
   );
   return JSON.parse(text.replace(/```json|```/g, '').trim());
 }
 
-async function generaDomande(apiKey, argomento, esistenti, n = 5) {
-  const esempi = esistenti.slice(0, 3).map(d => `- ${d.domanda}`).join('\n');
+async function generaDomande(argomento, esistenti, n = 5) {
+  const esempi = esistenti.slice(0, 4).map(d => `- ${d.domanda}`).join('\n');
   const text = await callClaude(
-    apiKey,
     `Sei un professore di Terapia Medica all'UNISR. Genera nuove domande d'esame a risposta breve (max 2 righe) basandoti sulla dispensa "Terapia Medica" di Enrica Piazza.
-Le domande devono essere cliniche, precise, del livello degli appelli reali.
-Rispondi SOLO con JSON valido, array di oggetti, nessun testo fuori.
-Formato: [{"domanda":"<testo domanda>","risposta":"<risposta corretta max 2 righe>"}]`,
+Le domande devono essere cliniche, precise, del livello degli appelli reali UNISR.
+Rispondi SOLO con un array JSON valido, nessun testo fuori, nessun markdown.
+Formato: [{"domanda":"<testo>","risposta":"<risposta corretta max 2 righe>"}]`,
     `Argomento: ${argomento}
-Esempi di domande già presenti (non ripetere):
+Domande già presenti (non ripetere concetti identici):
 ${esempi}
-Genera ${n} domande NUOVE e DIVERSE per questo argomento.`,
+Genera ${n} domande nuove e diverse su questo argomento.`,
     1500
   );
   const arr = JSON.parse(text.replace(/```json|```/g, '').trim());
@@ -112,10 +122,10 @@ Genera ${n} domande NUOVE e DIVERSE per questo argomento.`,
 
 // ─── VOTE CONFIG ───────────────────────────────────────────────────────────
 const VOTE = {
-  OTTIMO:       { bg: C.greenBg,  rule: C.greenRule,  text: C.green,  label: 'Ottimo',       score: 4 },
-  BUONO:        { bg: C.slateBg,  rule: C.slateRule,  text: C.slate,  label: 'Buono',        score: 3 },
-  SUFFICIENTE:  { bg: C.amberBg,  rule: C.amberRule,  text: C.amber,  label: 'Sufficiente',  score: 2 },
-  INSUFFICIENTE:{ bg: C.redLight, rule: C.redRule,    text: C.red,    label: 'Insufficiente',score: 0 },
+  OTTIMO:        { bg: C.greenBg,  rule: C.greenRule,  text: C.green,  label: 'Ottimo',        score: 4 },
+  BUONO:         { bg: C.slateBg,  rule: C.slateRule,  text: C.slate,  label: 'Buono',         score: 3 },
+  SUFFICIENTE:   { bg: C.amberBg,  rule: C.amberRule,  text: C.amber,  label: 'Sufficiente',   score: 2 },
+  INSUFFICIENTE: { bg: C.redLight, rule: C.redRule,    text: C.red,    label: 'Insufficiente', score: 0 },
 };
 
 // ─── PRIMITIVES ────────────────────────────────────────────────────────────
@@ -154,19 +164,21 @@ const Btn = ({ children, onClick, variant = 'primary', disabled, full, style: ex
   return <button style={{ ...base, ...vs[variant] }} onClick={onClick} disabled={disabled}>{children}</button>;
 };
 
-const Input = ({ label, hint, type = 'text', ...props }) => (
+const FieldInput = ({ label, hint, type = 'text', error, ...props }) => (
   <div style={{ marginBottom: 20 }}>
     {label && <Label>{label}</Label>}
-    <input type={type} {...props} style={{
-      width: '100%', padding: '10px 12px',
-      border: `1px solid ${C.rule}`, borderRadius: 3,
-      fontSize: 14, fontFamily: type === 'password' ? F.mono : F.sans,
-      color: C.ink, background: C.white, outline: 'none',
-      transition: 'border-color .15s',
-      ...(props.style || {}),
-    }}
-    onFocus={e => e.target.style.borderColor = C.ink}
-    onBlur={e => e.target.style.borderColor = C.rule}
+    <input
+      type={type}
+      {...props}
+      style={{
+        width: '100%', padding: '10px 12px',
+        border: `1px solid ${error ? C.red : C.rule}`, borderRadius: 3,
+        fontSize: 14, fontFamily: type === 'password' ? F.mono : F.sans,
+        color: C.ink, background: C.white, outline: 'none',
+        transition: 'border-color .15s',
+      }}
+      onFocus={e => e.target.style.borderColor = error ? C.red : C.ink}
+      onBlur={e => e.target.style.borderColor = error ? C.red : C.rule}
     />
     {hint && <div style={{ fontSize: 11, color: C.ink4, marginTop: 5, lineHeight: 1.5 }}>{hint}</div>}
   </div>
@@ -174,19 +186,60 @@ const Input = ({ label, hint, type = 'text', ...props }) => (
 
 const Spinner = () => (
   <svg width={14} height={14} viewBox="0 0 14 14" style={{ animation: 'spin .7s linear infinite', flexShrink: 0 }}>
-    <circle cx={7} cy={7} r={5.5} stroke="currentColor" strokeOpacity={.25} strokeWidth={2} fill="none"/>
-    <path d="M7 1.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth={2} strokeLinecap="round" fill="none"/>
+    <circle cx={7} cy={7} r={5.5} stroke="currentColor" strokeOpacity={.25} strokeWidth={2} fill="none" />
+    <path d="M7 1.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth={2} strokeLinecap="round" fill="none" />
   </svg>
+);
+
+// Masthead component reused across screens
+const Masthead = ({ nome, onMenu, onLogout, extra }) => (
+  <div style={{ background: C.white, borderBottom: `1px solid ${C.rule}` }}>
+    <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 52 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <span style={{ fontFamily: F.serif, fontSize: 16, fontWeight: 700, color: C.ink }}>Terapia Medica</span>
+          {onMenu && (
+            <button onClick={onMenu} style={{
+              fontSize: 11, fontFamily: F.mono, letterSpacing: '.07em', textTransform: 'uppercase',
+              color: C.ink3, background: 'none', border: `1px solid ${C.rule}`, borderRadius: 2,
+              padding: '4px 10px', cursor: 'pointer',
+            }}>
+              Menu
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {extra}
+          {nome && <span style={{ fontSize: 13, color: C.ink3 }}>{nome}</span>}
+          {onLogout && (
+            <button onClick={onLogout} style={{
+              fontSize: 11, color: C.ink4, background: 'none', border: 'none',
+              cursor: 'pointer', fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase',
+            }}>
+              Esci
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={{ height: 2, backgroundColor: C.red }} />
+    </div>
+  </div>
 );
 
 // ─── LOGIN SCREEN ──────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
   const [pwd, setPwd] = useState('');
   const [err, setErr] = useState('');
 
   const attempt = () => {
-    if (pwd === APP_PASSWORD) onLogin();
-    else { setErr('Accesso negato.'); setPwd(''); }
+    const u = username.trim().toLowerCase();
+    if (UTENTI[u] && UTENTI[u] === pwd) {
+      onLogin(u);
+    } else {
+      setErr('Username o password non corretti.');
+      setPwd('');
+    }
   };
 
   return (
@@ -198,115 +251,73 @@ function LoginScreen({ onLogin }) {
         <h1 style={{ fontFamily: F.serif, fontSize: 32, fontWeight: 700, color: C.ink, lineHeight: 1.2, marginBottom: 6 }}>
           Terapia Medica
         </h1>
-        <div style={{ fontFamily: F.sans, fontSize: 14, color: C.ink3, marginBottom: 32 }}>
+        <p style={{ fontSize: 14, color: C.ink3, marginBottom: 32, lineHeight: 1.6 }}>
           Piattaforma di preparazione all'esame
-        </div>
+        </p>
         <RedRule />
-        <Input
+        <FieldInput
+          label="Username"
+          placeholder="es. edoardo"
+          value={username}
+          onChange={e => { setUsername(e.target.value); setErr(''); }}
+          onKeyDown={e => e.key === 'Enter' && attempt()}
+          error={!!err}
+        />
+        <FieldInput
           label="Password"
           type="password"
           placeholder="——"
           value={pwd}
           onChange={e => { setPwd(e.target.value); setErr(''); }}
           onKeyDown={e => e.key === 'Enter' && attempt()}
+          error={!!err}
         />
-        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontFamily: F.mono }}>{err}</div>}
+        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 14, fontFamily: F.mono }}>{err}</div>}
         <Btn onClick={attempt} full>Accedi</Btn>
       </div>
     </div>
   );
 }
 
-// ─── REGISTER SCREEN ───────────────────────────────────────────────────────
-function RegisterScreen({ onRegister }) {
-  const [nome, setNome] = useState('');
-  const [key, setKey] = useState('');
-  const [err, setErr] = useState('');
-
-  const go = () => {
-    if (!nome.trim()) { setErr('Inserisci il tuo nome.'); return; }
-    if (!key.trim().startsWith('sk-ant-')) { setErr('API key non valida (deve iniziare con sk-ant-).'); return; }
-    onRegister({ nome: nome.trim(), apiKey: key.trim() });
-  };
-
-  return (
-    <div style={{ minHeight: '100vh', background: C.paper, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      <div style={{ width: '100%', maxWidth: 400 }}>
-        <div style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: C.ink4, marginBottom: 16 }}>
-          Primo accesso
-        </div>
-        <h2 style={{ fontFamily: F.serif, fontSize: 28, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Configura il tuo profilo</h2>
-        <p style={{ fontSize: 13, color: C.ink3, marginBottom: 32, lineHeight: 1.6 }}>
-          Questi dati vengono salvati nel tuo browser. Non ti verrà chiesto di reinserirli.
-        </p>
-        <RedRule />
-        <Input
-          label="Il tuo nome"
-          placeholder="es. Edoardo"
-          value={nome}
-          onChange={e => { setNome(e.target.value); setErr(''); }}
-        />
-        <Input
-          label="API Key Anthropic"
-          type="password"
-          placeholder="sk-ant-..."
-          value={key}
-          onChange={e => { setKey(e.target.value); setErr(''); }}
-          hint={<>Ottienila gratis su <a href="https://console.anthropic.com" target="_blank" rel="noreferrer" style={{ color: C.red }}>console.anthropic.com</a> → API Keys → Create Key</>}
-        />
-        {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontFamily: F.mono }}>{err}</div>}
-        <Btn onClick={go} full>Salva e inizia</Btn>
-      </div>
-    </div>
-  );
-}
-
 // ─── SETUP SCREEN ──────────────────────────────────────────────────────────
-function SetupScreen({ user, onStart, onLogout }) {
+function SetupScreen({ username, onStart, onLogout }) {
   const [mode, setMode] = useState('argomento');
   const [selectedArgs, setSelectedArgs] = useState([]);
   const [numQ, setNumQ] = useState(10);
 
   const toggleArg = a => setSelectedArgs(p => p.includes(a) ? p.filter(x => x !== a) : [...p, a]);
   const allSel = selectedArgs.length === argomenti.length;
-  const pool = mode === 'argomento'
+
+  const realPool = mode === 'argomento'
     ? domande.filter(d => selectedArgs.includes(d.argomento))
     : domande;
-  const maxQ = pool.length;
-  const canStart = mode === 'esame' || (mode !== 'esame' && (mode === 'random' ? true : selectedArgs.length > 0));
+  const maxQ = realPool.length;
+
+  const canStart = mode === 'esame' || mode === 'random' || (mode === 'argomento' && selectedArgs.length > 0);
 
   const go = () => {
-    let q;
-    if (mode === 'esame') q = shuffle(domande).slice(0, EXAM_N);
-    else q = shuffle(pool).slice(0, Math.min(numQ, maxQ));
-    onStart({ pool: q, isExam: mode === 'esame' });
+    let pool;
+    if (mode === 'esame') {
+      pool = shuffle(domande).slice(0, EXAM_N);
+    } else {
+      pool = shuffle(realPool).slice(0, Math.min(numQ, maxQ));
+    }
+    onStart({ pool, isExam: mode === 'esame', argomentiScelti: mode === 'argomento' ? selectedArgs : argomenti });
   };
+
+  // Nome display
+  const nomeDisplay = username.charAt(0).toUpperCase() + username.slice(1);
 
   return (
     <div style={{ minHeight: '100vh', background: C.paper }}>
-      {/* Masthead */}
-      <div style={{ borderBottom: `1px solid ${C.rule}`, background: C.white }}>
-        <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56 }}>
-            <div>
-              <span style={{ fontFamily: F.serif, fontSize: 18, fontWeight: 700, color: C.ink, letterSpacing: '-.01em' }}>Terapia Medica</span>
-              <span style={{ fontFamily: F.mono, fontSize: 10, color: C.ink4, letterSpacing: '.08em', marginLeft: 12, textTransform: 'uppercase' }}>UNISR · {domande.length} domande</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <span style={{ fontSize: 13, color: C.ink3 }}>{user.nome}</span>
-              <button onClick={onLogout} style={{ fontSize: 11, color: C.ink4, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase' }}>Esci</button>
-            </div>
-          </div>
-          <div style={{ height: 2, backgroundColor: C.red }} />
-        </div>
-      </div>
+      <Masthead nome={nomeDisplay} onLogout={onLogout} />
 
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '48px 24px' }}>
         <h2 style={{ fontFamily: F.serif, fontSize: 30, fontWeight: 700, color: C.ink, marginBottom: 6, letterSpacing: '-.02em' }}>
-          Buono studio, {user.nome}.
+          Buono studio, {nomeDisplay}.
         </h2>
         <p style={{ fontSize: 14, color: C.ink3, marginBottom: 40, lineHeight: 1.6 }}>
-          Scegli la modalità di esercitazione e inizia la sessione.
+          Scegli modalità e argomenti, poi inizia la sessione.
         </p>
 
         {/* Mode */}
@@ -332,31 +343,31 @@ function SetupScreen({ user, onStart, onLogout }) {
           })}
         </div>
 
-        {/* Argomenti */}
+        {/* Argomenti — senza contatore */}
         {mode === 'argomento' && (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
               <Label>Argomenti</Label>
-              <button onClick={() => setSelectedArgs(allSel ? [] : [...argomenti])} style={{ fontSize: 11, color: C.red, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+              <button onClick={() => setSelectedArgs(allSel ? [] : [...argomenti])} style={{
+                fontSize: 11, color: C.red, background: 'none', border: 'none', cursor: 'pointer',
+                fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase',
+              }}>
                 {allSel ? 'Deseleziona tutti' : 'Seleziona tutti'}
               </button>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 32, maxHeight: 280, overflowY: 'auto' }}>
               {argomenti.map(a => {
-                const n = domande.filter(d => d.argomento === a).length;
                 const sel = selectedArgs.includes(a);
                 return (
                   <button key={a} onClick={() => toggleArg(a)} style={{
                     background: sel ? C.ink : C.white,
                     border: `1px solid ${sel ? C.ink : C.rule}`,
-                    borderRadius: 2, padding: '5px 11px', cursor: 'pointer',
+                    borderRadius: 2, padding: '5px 12px', cursor: 'pointer',
                     fontSize: 12, fontFamily: F.sans, fontWeight: sel ? 600 : 400,
                     color: sel ? C.white : C.ink3,
-                    display: 'flex', alignItems: 'center', gap: 6,
                     transition: 'all .12s',
                   }}>
                     {a}
-                    <span style={{ fontFamily: F.mono, fontSize: 10, opacity: .6 }}>{n}</span>
                   </button>
                 );
               })}
@@ -382,7 +393,7 @@ function SetupScreen({ user, onStart, onLogout }) {
 
         <Rule my={0} />
         <div style={{ paddingTop: 28 }}>
-          <Btn onClick={go} disabled={!canStart} style={{ minWidth: 180 }}>
+          <Btn onClick={go} disabled={!canStart} style={{ minWidth: 200 }}>
             {mode === 'esame' ? 'Inizia simulazione esame' : 'Inizia sessione'}
           </Btn>
         </div>
@@ -392,12 +403,15 @@ function SetupScreen({ user, onStart, onLogout }) {
 }
 
 // ─── QUIZ SCREEN ────────────────────────────────────────────────────────────
-function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
+function QuizScreen({ pool: initialPool, isExam, argomentiScelti, username, onEnd, onMenu }) {
+  // Keep real questions first, then append generated ones
+  const [realDone, setRealDone] = useState(false);
   const [pool, setPool] = useState(initialPool);
   const [current, setCurrent] = useState(0);
   const [risposta, setRisposta] = useState('');
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [genMsg, setGenMsg] = useState('');
   const [feedback, setFeedback] = useState(null);
   const [err, setErr] = useState('');
   const [showRef, setShowRef] = useState(false);
@@ -406,29 +420,38 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
 
   const q = pool[current];
   const pct = pool.length > 0 ? (current / pool.length) * 100 : 0;
+  const nomeDisplay = username.charAt(0).toUpperCase() + username.slice(1);
 
-  // Auto-generate more questions when approaching the end
+  // Generate new questions when we've exhausted real ones
   useEffect(() => {
-    if (!isExam && pool.length > 0 && current >= pool.length - 3) {
-      const arg = pool[pool.length - 1]?.argomento;
-      if (!arg || generating) return;
+    if (isExam || generating || realDone) return;
+    // Check if we're near the end of real (non-generated) questions
+    const remaining = pool.slice(current).filter(d => !d.generata);
+    if (remaining.length <= 2) {
+      setRealDone(true);
       setGenerating(true);
+      setGenMsg('Sto generando nuove domande…');
+      // Pick a random argomento from the chosen ones
+      const arg = argomentiScelti[Math.floor(Math.random() * argomentiScelti.length)];
       const esistenti = domande.filter(d => d.argomento === arg);
-      generaDomande(user.apiKey, arg, esistenti, 5)
-        .then(nuove => setPool(p => [...p, ...nuove]))
+      generaDomande(arg, esistenti, 6)
+        .then(nuove => {
+          setPool(p => [...p, ...nuove]);
+          setRealDone(false);
+        })
         .catch(() => {})
-        .finally(() => setGenerating(false));
+        .finally(() => { setGenerating(false); setGenMsg(''); });
     }
-  }, [current, pool, isExam, user.apiKey, generating]);
+  }, [current, pool, isExam, generating, realDone, argomentiScelti]);
 
   const handleSubmit = async () => {
     setErr(''); setLoading(true); setFeedback(null);
     try {
-      const fb = await correggi(user.apiKey, q.domanda, risposta, q.risposta);
+      const fb = await correggi(q.domanda, risposta, q.risposta);
       setFeedback(fb);
       setResults(p => [...p, { q, risposta, fb }]);
     } catch (e) {
-      setErr(e.message || 'Errore. Controlla la connessione.');
+      setErr(e.message || 'Errore di connessione. Riprova.');
     } finally { setLoading(false); }
   };
 
@@ -442,37 +465,41 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
     advance();
   };
 
-  if (done) return <ResultsScreen results={results} pool={pool} isExam={isExam} user={user} onEnd={onEnd} />;
+  if (done) return (
+    <ResultsScreen results={results} pool={pool} isExam={isExam} username={username} onEnd={onEnd} onMenu={onMenu} />
+  );
 
   const vv = feedback ? (VOTE[feedback.voto] || VOTE.SUFFICIENTE) : null;
 
   return (
     <div style={{ minHeight: '100vh', background: C.paper }}>
-      {/* Masthead */}
-      <div style={{ background: C.white, borderBottom: `1px solid ${C.rule}` }}>
-        <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 52 }}>
-            <span style={{ fontFamily: F.serif, fontSize: 16, fontWeight: 700, color: C.ink }}>Terapia Medica</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-              {isExam && <span style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: C.red }}>Simulazione esame</span>}
-              <span style={{ fontFamily: F.mono, fontSize: 12, color: C.ink4 }}>{current + 1} / {pool.length}</span>
-              <span style={{ fontSize: 13, color: C.ink3 }}>{user.nome}</span>
-            </div>
+      <Masthead
+        nome={nomeDisplay}
+        onMenu={onMenu}
+        extra={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {isExam && <span style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: C.red }}>Esame</span>}
+            <span style={{ fontFamily: F.mono, fontSize: 12, color: C.ink4 }}>{current + 1} / {pool.length}</span>
+            {genMsg && <span style={{ fontFamily: F.mono, fontSize: 10, color: C.ink4 }}>{genMsg}</span>}
           </div>
-          {/* Progress rule */}
-          <div style={{ height: 2, background: C.rule, position: 'relative' }}>
-            <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${pct}%`, background: C.red, transition: 'width .4s ease' }} />
-          </div>
-        </div>
+        }
+      />
+      {/* Progress bar */}
+      <div style={{ height: 2, background: C.rule }}>
+        <div style={{ height: '100%', background: C.red, width: `${pct}%`, transition: 'width .4s ease' }} />
       </div>
 
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '40px 24px' }}>
 
-        {/* Question */}
+        {/* Question card */}
         <div style={{ background: C.white, border: `1px solid ${C.rule}`, borderRadius: 4, padding: '32px 36px', marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
             <span style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: C.red }}>{q.argomento}</span>
-            {q.generata && <span style={{ fontFamily: F.mono, fontSize: 9, letterSpacing: '.08em', textTransform: 'uppercase', color: C.ink4, borderLeft: `1px solid ${C.rule}`, paddingLeft: 10 }}>Generata</span>}
+            {q.generata && (
+              <span style={{ fontFamily: F.mono, fontSize: 9, letterSpacing: '.08em', textTransform: 'uppercase', color: C.ink4, borderLeft: `1px solid ${C.rule}`, paddingLeft: 10 }}>
+                Generata
+              </span>
+            )}
             <span style={{ fontFamily: F.mono, fontSize: 9, color: C.ink4, marginLeft: 'auto' }}>#{q.id}</span>
           </div>
 
@@ -481,11 +508,17 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
           </p>
 
           {!showRef
-            ? <button onClick={() => setShowRef(true)} style={{ fontSize: 11, fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase', color: C.ink4, background: 'none', border: 'none', cursor: 'pointer', marginBottom: 20, textDecoration: 'underline' }}>
+            ? <button onClick={() => setShowRef(true)} style={{
+                fontSize: 11, fontFamily: F.mono, letterSpacing: '.06em', textTransform: 'uppercase',
+                color: C.ink4, background: 'none', border: 'none', cursor: 'pointer',
+                marginBottom: 20, textDecoration: 'underline',
+              }}>
                 Mostra risposta di riferimento
               </button>
             : <div style={{ background: C.paper, border: `1px solid ${C.rule}`, borderLeft: `3px solid ${C.red}`, padding: '12px 16px', marginBottom: 20, borderRadius: 2 }}>
-                <div style={{ fontFamily: F.mono, fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: C.ink4, marginBottom: 6 }}>Risposta dispensa Piazza</div>
+                <div style={{ fontFamily: F.mono, fontSize: 9, letterSpacing: '.1em', textTransform: 'uppercase', color: C.ink4, marginBottom: 6 }}>
+                  Risposta dispensa Piazza
+                </div>
                 <p style={{ fontSize: 13, color: C.ink2, lineHeight: 1.65, margin: 0 }}>{q.risposta}</p>
               </div>
           }
@@ -504,12 +537,11 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
               background: feedback ? C.paper : C.white,
               resize: 'vertical', outline: 'none', lineHeight: 1.6,
             }}
-            onFocus={e => e.target.style.borderColor = C.ink}
-            onBlur={e => e.target.style.borderColor = C.rule}
+            onFocus={e => !feedback && (e.target.style.borderColor = C.ink)}
+            onBlur={e => (e.target.style.borderColor = C.rule)}
           />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
             <span style={{ fontFamily: F.mono, fontSize: 10, color: C.ink4 }}>{risposta.length} caratteri</span>
-            {generating && <span style={{ fontFamily: F.mono, fontSize: 10, color: C.ink4 }}>Generazione nuove domande…</span>}
           </div>
 
           {err && <p style={{ fontSize: 12, color: C.red, marginTop: 10, fontFamily: F.mono }}>{err}</p>}
@@ -519,32 +551,39 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
               <Btn onClick={handleSubmit} disabled={loading}>
                 {loading ? <><Spinner /> Correzione in corso…</> : 'Correggi risposta'}
               </Btn>
-              {!isExam && <Btn variant="ghost" onClick={handleSkip} disabled={loading}>Salta</Btn>}
+              {!isExam && (
+                <Btn variant="ghost" onClick={handleSkip} disabled={loading}>Salta</Btn>
+              )}
             </div>
           )}
         </div>
 
-        {/* Feedback */}
+        {/* Feedback card */}
         {feedback && vv && (
           <div style={{ background: vv.bg, border: `1px solid ${vv.rule}`, borderRadius: 4, padding: '28px 32px', animation: 'fadeUp .25s ease' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 16 }}>
               <span style={{ fontFamily: F.serif, fontSize: 20, fontWeight: 700, color: vv.text }}>{vv.label}</span>
               <span style={{ fontFamily: F.mono, fontSize: 13, color: vv.text }}>{feedback.punteggio} / 10</span>
             </div>
-            <Rule color={vv.rule} my={0} />
+            <Rule color={vv.rule} />
             <p style={{ fontSize: 14, lineHeight: 1.75, color: C.ink2, margin: '16px 0', paddingLeft: 16, borderLeft: `2px solid ${vv.rule}` }}>
               {feedback.feedback}
             </p>
             {feedback.concetti?.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 20 }}>
                 {feedback.concetti.map((c, i) => (
-                  <span key={i} style={{ fontFamily: F.mono, fontSize: 11, color: vv.text, background: vv.bg, border: `1px solid ${vv.rule}`, borderRadius: 2, padding: '3px 9px' }}>{c}</span>
+                  <span key={i} style={{ fontFamily: F.mono, fontSize: 11, color: vv.text, background: vv.bg, border: `1px solid ${vv.rule}`, borderRadius: 2, padding: '3px 9px' }}>
+                    {c}
+                  </span>
                 ))}
               </div>
             )}
-            <Btn variant="secondary" onClick={advance}>
-              {current + 1 >= pool.length ? 'Vedi risultati' : 'Prossima domanda'}
-            </Btn>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn onClick={advance}>
+                {current + 1 >= pool.length ? 'Vedi risultati' : 'Prossima domanda'}
+              </Btn>
+              <Btn variant="secondary" onClick={onMenu}>Menu principale</Btn>
+            </div>
           </div>
         )}
       </div>
@@ -553,44 +592,43 @@ function QuizScreen({ pool: initialPool, isExam, user, onEnd }) {
 }
 
 // ─── RESULTS SCREEN ────────────────────────────────────────────────────────
-function ResultsScreen({ results, pool, isExam, user, onEnd }) {
+function ResultsScreen({ results, pool, isExam, username, onEnd, onMenu }) {
   const [review, setReview] = useState(false);
+  const nomeDisplay = username.charAt(0).toUpperCase() + username.slice(1);
 
   const counts = { OTTIMO: 0, BUONO: 0, SUFFICIENTE: 0, INSUFFICIENTE: 0 };
   let totalScore = 0;
   results.forEach(r => {
-    if (r.fb?.voto) { counts[r.fb.voto] = (counts[r.fb.voto] || 0) + 1; totalScore += VOTE[r.fb.voto]?.score || 0; }
+    if (r.fb?.voto) {
+      counts[r.fb.voto] = (counts[r.fb.voto] || 0) + 1;
+      totalScore += VOTE[r.fb.voto]?.score || 0;
+    }
   });
   const maxScore = pool.length * 4;
   const pct = Math.round((totalScore / maxScore) * 100);
   const examGrade = isExam ? Math.min(30, Math.max(18, Math.round(18 + (pct / 100) * 12))) : null;
+  const passed = examGrade >= 18;
 
   return (
     <div style={{ minHeight: '100vh', background: C.paper }}>
-      <div style={{ background: C.white, borderBottom: `1px solid ${C.rule}` }}>
-        <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px' }}>
-          <div style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontFamily: F.serif, fontSize: 16, fontWeight: 700, color: C.ink }}>Terapia Medica</span>
-            <span style={{ fontSize: 13, color: C.ink3 }}>{user.nome}</span>
-          </div>
-          <div style={{ height: 2, background: C.red }} />
-        </div>
-      </div>
+      <Masthead nome={nomeDisplay} onMenu={onMenu} />
 
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '48px 24px' }}>
         <div style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: C.ink4, marginBottom: 12 }}>
-          {isExam ? 'Simulazione esame · Risultato' : 'Sessione completata'}
+          {isExam ? 'Simulazione esame · Risultato finale' : 'Sessione completata'}
         </div>
-        <h2 style={{ fontFamily: F.serif, fontSize: 32, fontWeight: 700, color: C.ink, marginBottom: 8, letterSpacing: '-.02em' }}>
-          {isExam
-            ? (examGrade >= 18 ? `${examGrade} / 30` : 'Non sufficiente')
-            : `${pct}% corretto`}
+
+        <h2 style={{ fontFamily: F.serif, fontSize: 36, fontWeight: 700, color: isExam ? (passed ? C.green : C.red) : C.ink, marginBottom: 8, letterSpacing: '-.02em' }}>
+          {isExam ? `${examGrade} / 30` : `${pct}% corretto`}
         </h2>
         <p style={{ fontSize: 14, color: C.ink3, marginBottom: 40 }}>
-          {pool.length} domande · {user.nome}
+          {pool.length} domande · {nomeDisplay}
+          {isExam && <span style={{ marginLeft: 12, color: passed ? C.green : C.red, fontWeight: 600 }}>
+            {passed ? '— Sufficiente' : '— Non sufficiente'}
+          </span>}
         </p>
 
-        <Rule my={0} />
+        <Rule />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 1, background: C.rule, border: `1px solid ${C.rule}`, marginBottom: 40, marginTop: 1 }}>
           {Object.entries(counts).map(([voto, n]) => {
             const v = VOTE[voto];
@@ -603,9 +641,10 @@ function ResultsScreen({ results, pool, isExam, user, onEnd }) {
           })}
         </div>
 
-        <div style={{ display: 'flex', gap: 12, marginBottom: 48 }}>
-          <Btn onClick={onEnd}>Nuova sessione</Btn>
-          <Btn variant="secondary" onClick={() => setReview(r => !r)}>
+        <div style={{ display: 'flex', gap: 12, marginBottom: 48, flexWrap: 'wrap' }}>
+          <Btn onClick={onMenu}>Menu principale</Btn>
+          <Btn variant="secondary" onClick={onEnd}>Nuova sessione</Btn>
+          <Btn variant="ghost" onClick={() => setReview(r => !r)}>
             {review ? 'Chiudi revisione' : 'Rivedi le risposte'}
           </Btn>
         </div>
@@ -615,15 +654,23 @@ function ResultsScreen({ results, pool, isExam, user, onEnd }) {
           return (
             <div key={i} style={{ background: C.white, border: `1px solid ${C.rule}`, borderRadius: 3, padding: '24px 28px', marginBottom: 12, animation: 'fadeUp .2s ease' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 10 }}>
-                <span style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', color: vv.text }}>{vv.label} · {r.fb?.punteggio}/10</span>
+                <span style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', color: vv.text }}>
+                  {vv.label} · {r.fb?.punteggio}/10
+                </span>
                 <span style={{ fontFamily: F.mono, fontSize: 10, color: C.ink4 }}>{r.q.argomento}</span>
+                {r.q.generata && <span style={{ fontFamily: F.mono, fontSize: 9, color: C.ink4 }}>· Generata</span>}
               </div>
-              <p style={{ fontFamily: F.serif, fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 12, lineHeight: 1.4 }}>{r.q.domanda}</p>
+              <p style={{ fontFamily: F.serif, fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 12, lineHeight: 1.4 }}>
+                {r.q.domanda}
+              </p>
               <div style={{ fontSize: 13, color: C.ink3, background: C.paper, border: `1px solid ${C.rule}`, borderRadius: 2, padding: '8px 12px', marginBottom: 10 }}>
-                <span style={{ fontFamily: F.mono, fontSize: 9, textTransform: 'uppercase', letterSpacing: '.08em', color: C.ink4 }}>Tua risposta: </span>{r.risposta}
+                <span style={{ fontFamily: F.mono, fontSize: 9, textTransform: 'uppercase', letterSpacing: '.08em', color: C.ink4 }}>Tua risposta: </span>
+                {r.risposta}
               </div>
               {r.fb?.feedback && (
-                <p style={{ fontSize: 13, color: C.ink2, lineHeight: 1.65, borderLeft: `2px solid ${vv.rule}`, paddingLeft: 12, margin: 0 }}>{r.fb.feedback}</p>
+                <p style={{ fontSize: 13, color: C.ink2, lineHeight: 1.65, borderLeft: `2px solid ${vv.rule}`, paddingLeft: 12, margin: 0 }}>
+                  {r.fb.feedback}
+                </p>
               )}
             </div>
           );
@@ -635,15 +682,46 @@ function ResultsScreen({ results, pool, isExam, user, onEnd }) {
 
 // ─── ROOT ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed, setAuthed] = useState(false);
-  const [user, setUser] = useState(() => loadUser());
+  const [username, setUsername] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY))?.username || null; }
+    catch { return null; }
+  });
+  const [screen, setScreen] = useState('setup'); // setup | quiz
   const [session, setSession] = useState(null);
 
-  const handleRegister = u => { saveUser(u); setUser(u); };
-  const handleLogout = () => { clearUser(); setUser(null); setSession(null); };
+  const handleLogin = u => {
+    saveSession({ username: u });
+    setUsername(u);
+  };
 
-  if (!authed) return <LoginScreen onLogin={() => setAuthed(true)} />;
-  if (!user) return <RegisterScreen onRegister={handleRegister} />;
-  if (session) return <QuizScreen {...session} user={user} onEnd={() => setSession(null)} />;
-  return <SetupScreen user={user} onStart={s => setSession(s)} onLogout={handleLogout} />;
+  const handleLogout = () => {
+    clearSession();
+    setUsername(null);
+    setSession(null);
+    setScreen('setup');
+  };
+
+  const handleStart = s => { setSession(s); setScreen('quiz'); };
+  const handleMenu  = () => { setSession(null); setScreen('setup'); };
+
+  if (!username) return <LoginScreen onLogin={handleLogin} />;
+
+  if (screen === 'quiz' && session) {
+    return (
+      <QuizScreen
+        {...session}
+        username={username}
+        onEnd={() => setScreen('setup')}
+        onMenu={handleMenu}
+      />
+    );
+  }
+
+  return (
+    <SetupScreen
+      username={username}
+      onStart={handleStart}
+      onLogout={handleLogout}
+    />
+  );
 }
